@@ -33,7 +33,7 @@ public sealed record AlertSettings
     public AlertChannelSet ChannelsFor(AlertKind kind) => kind switch
     {
         AlertKind.ThreatIncreased => Threats,
-        AlertKind.Unreadable or AlertKind.MemberCountWhileUnreadable => Unreadable,
+        AlertKind.Unreadable or AlertKind.Overflow or AlertKind.MemberCountWhileUnreadable => Unreadable,
         _ => AllClear,
     };
 }

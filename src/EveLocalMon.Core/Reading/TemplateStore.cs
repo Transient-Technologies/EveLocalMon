@@ -28,7 +28,7 @@ public static class TemplateStore
             Frame image = FrameIo.LoadPng(Path.Combine(directory, entry.File));
             bool[] mask = IconMasking.Default(image.Width);
             var category = Enum.Parse<TemplateCategory>(entry.Category, ignoreCase: true);
-            icons.Add(new IconTemplate(entry.Name, category, image, mask));
+            icons.Add(new IconTemplate(entry.Name, category, image, mask, ParseColor(entry.Color)));
         }
 
         var digits = new Dictionary<char, bool[,]>();
@@ -44,6 +44,24 @@ public static class TemplateStore
         }
 
         return new TemplateSet(icons, digits);
+    }
+
+    /// <summary>"#rrggbb" or "rrggbb". Anything else is null rather than an error: a colour is cosmetic
+    /// and must never stop the app loading the templates that do the matching.</summary>
+    internal static Bgr? ParseColor(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        ReadOnlySpan<char> hex = text.AsSpan().Trim().TrimStart('#');
+        if (hex.Length != 6 || !int.TryParse(hex, System.Globalization.NumberStyles.AllowHexSpecifier, null, out int rgb))
+        {
+            return null;
+        }
+
+        return new Bgr((byte)(rgb & 0xFF), (byte)((rgb >> 8) & 0xFF), (byte)((rgb >> 16) & 0xFF));
     }
 
     private static bool[,] BinarizeAndCrop(Frame frame, int lumaMin)
@@ -63,5 +81,6 @@ public static class TemplateStore
     private sealed record TemplateEntry(
         [property: JsonPropertyName("name")] string Name,
         [property: JsonPropertyName("file")] string File,
-        [property: JsonPropertyName("category")] string Category);
+        [property: JsonPropertyName("category")] string Category,
+        [property: JsonPropertyName("color")] string? Color = null);
 }

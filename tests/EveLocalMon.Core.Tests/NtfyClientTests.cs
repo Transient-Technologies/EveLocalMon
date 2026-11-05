@@ -10,7 +10,7 @@ namespace EveLocalMon.Core.Tests;
 public class NtfyClientTests
 {
     private static readonly AlertMessage Threat = new(
-        AlertKind.ThreatIncreased, "EVE: hostile in Local", "1 red — 1 threat visible", AlertPriority.Urgent, DateTimeOffset.UtcNow);
+        AlertKind.ThreatIncreased, "Hostile in Local", "1 red — 1 threat visible", AlertPriority.Urgent, DateTimeOffset.UtcNow);
 
     private sealed class StubHandler : HttpMessageHandler
     {
@@ -40,7 +40,7 @@ public class NtfyClientTests
         var request = Assert.Single(handler.Requests);
         Assert.Equal("https://ntfy.sh/my-topic", request.Uri?.ToString());
         Assert.Equal(Threat.Body, request.Body);
-        Assert.Equal(Threat.Title, Header(request.Headers, "Title"));
+        Assert.Equal("EVE: " + Threat.Title, Header(request.Headers, "Title"));
         Assert.Equal("urgent", Header(request.Headers, "Priority"));
         Assert.Equal("rotating_light", Header(request.Headers, "Tags"));
     }
@@ -58,6 +58,7 @@ public class NtfyClientTests
 
     [Theory]
     [InlineData(AlertKind.Unreadable, AlertPriority.High, "high", "warning")]
+    [InlineData(AlertKind.Overflow, AlertPriority.High, "high", "warning")]
     [InlineData(AlertKind.LocalClear, AlertPriority.Low, "low", "white_check_mark")]
     public async Task PriorityAndTagsFollowTheAlertKind(AlertKind kind, AlertPriority priority, string expectedPriority, string expectedTag)
     {

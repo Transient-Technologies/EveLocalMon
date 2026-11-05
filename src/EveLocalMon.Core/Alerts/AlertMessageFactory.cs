@@ -12,11 +12,11 @@ public static class AlertMessageFactory
     public static AlertMessage Create(AlertEvent alertEvent) => alertEvent switch
     {
         ThreatIncreased threat => CreateThreat(threat),
-        LocalClear clear => new AlertMessage(AlertKind.LocalClear, "EVE: Local clear", "No threats visible.", AlertPriority.Low, clear.At),
+        LocalClear clear => new AlertMessage(AlertKind.LocalClear, "All clear", "No threats visible.", AlertPriority.Low, clear.At),
         ReadabilityChanged readability => CreateReadability(readability),
         MemberCountIncreasedWhileUnreadable joined => new AlertMessage(
             AlertKind.MemberCountWhileUnreadable,
-            "EVE: pilots joined, Local unreadable",
+            "Pilots joined, Local unreadable",
             $"Local {joined.Previous} → {joined.Current} while unreadable. New pilots not checked.",
             AlertPriority.High,
             joined.At),
@@ -30,13 +30,13 @@ public static class AlertMessageFactory
         return threat.Previous == 0
             ? new AlertMessage(
                 AlertKind.ThreatIncreased,
-                "EVE: hostile in Local",
+                "Hostile in Local",
                 $"{breakdown} — {Plural(threat.Current, "threat")} visible",
                 AlertPriority.Urgent,
                 threat.At)
             : new AlertMessage(
                 AlertKind.ThreatIncreased,
-                "EVE: more hostiles in Local",
+                "More hostiles in Local",
                 $"+{threat.Current - threat.Previous} ({breakdown}) — now {Plural(threat.Current, "threat")}",
                 AlertPriority.Urgent,
                 threat.At);
@@ -49,20 +49,19 @@ public static class AlertMessageFactory
             string body = readability.MemberCount is { } count
                 ? $"{Plural(count, "pilot")}, all visible."
                 : $"{Plural(readability.VisibleRows, "row")} readable.";
-            return new AlertMessage(AlertKind.Readable, "EVE: Local readable again", body, AlertPriority.Low, readability.At);
+            return new AlertMessage(AlertKind.Readable, "Local readable again", body, AlertPriority.Low, readability.At);
         }
 
-        string reason = readability.Current switch
-        {
-            Readability.NotVisible => "Local window not visible — covered, minimised or mis-calibrated.",
-            _ => readability.MemberCount is { } count
-                ? $"Local too long to read: {count} pilots, {readability.VisibleRows} visible."
-                : $"Local too long to read: {readability.VisibleRows} visible, member count unreadable.",
-        };
+        bool notVisible = readability.Current == Readability.NotVisible;
+        string reason = notVisible
+            ? "Local window not visible — covered, minimised or mis-calibrated."
+            : readability.MemberCount is { } members
+                ? $"Local too long to read: {members} pilots, {readability.VisibleRows} visible."
+                : $"Local too long to read: {readability.VisibleRows} visible, member count unreadable.";
 
         return new AlertMessage(
-            AlertKind.Unreadable,
-            "EVE: Local unreadable",
+            notVisible ? AlertKind.Unreadable : AlertKind.Overflow,
+            notVisible ? "Local unreadable" : "Local unreadable — too long",
             $"{reason} Cannot confirm Local is clear.",
             AlertPriority.High,
             readability.At);
@@ -71,7 +70,7 @@ public static class AlertMessageFactory
     /// <summary>"2 red, 1 neutral" — categories with nothing in them are left out entirely.
     /// Pilots with no icon read as neutral (that is what they are to you); an unmatched icon reads
     /// as "unknown icon" to keep "unidentified" distinct from "confirmed hostile".</summary>
-    private static string DescribeBreakdown(ThreatBreakdown breakdown)
+    public static string DescribeBreakdown(ThreatBreakdown breakdown)
     {
         var parts = new List<string>(3);
 

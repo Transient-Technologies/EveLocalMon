@@ -10,12 +10,13 @@ namespace EveLocalMon.App.Services;
 
 /// <summary>
 /// Shows alert popups near the EVE window being watched, not on whichever monitor Windows thinks
-/// is primary — the point is to appear where the user is already looking.
+/// is primary — the point is to appear where the user is already looking. <c>meta</c> supplies the
+/// popup's grey third line (e.g. "20 in Local · all rows readable") from the current monitor status.
 /// </summary>
-public sealed class AlertPresenter(Window owner, Func<CorePixelRect?> watchedRegion) : IAlertPresenter
+public sealed class AlertPresenter(Window owner, Func<CorePixelRect?> watchedRegion, Func<AlertMessage, string>? meta = null) : IAlertPresenter
 {
     private const int MaxVisible = 3;
-    private const int MarginPhysical = 16;
+    private const int MarginPhysical = 8;
 
     private readonly List<AlertPopupWindow> _live = [];
 
@@ -33,7 +34,7 @@ public sealed class AlertPresenter(Window owner, Func<CorePixelRect?> watchedReg
         }
 
         Screen screen = FindScreen();
-        var popup = new AlertPopupWindow(message, Lifetime);
+        var popup = new AlertPopupWindow(message, meta?.Invoke(message) ?? string.Empty, Lifetime);
 
         int width = (int)Math.Round(AlertPopupWindow.PopupWidth * screen.Scaling);
         int height = (int)Math.Round(AlertPopupWindow.PopupHeight * screen.Scaling);
@@ -41,7 +42,7 @@ public sealed class AlertPresenter(Window owner, Func<CorePixelRect?> watchedReg
 
         popup.Position = new PixelPoint(
             screen.WorkingArea.Right - width - MarginPhysical,
-            screen.WorkingArea.Bottom - ((slot + 1) * (height + 8)) - MarginPhysical);
+            screen.WorkingArea.Bottom - ((slot + 1) * height) - MarginPhysical);
 
         popup.Closed += (_, _) => _live.Remove(popup);
         _live.Add(popup);

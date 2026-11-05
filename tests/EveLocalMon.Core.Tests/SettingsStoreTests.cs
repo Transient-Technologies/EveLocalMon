@@ -107,4 +107,65 @@ public class SettingsStoreTests : IDisposable
         Assert.Equal(200, store.Load().PollIntervalMs);
         Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
     }
+
+    [Fact]
+    public void RoundTripsUiSettings()
+    {
+        var store = new SettingsStore(SettingsPath);
+        store.Save(new AppSettings { Ui = new UiSettings { KeepOnTop = true, CalibrationZoom = 4 } });
+
+        AppSettings loaded = store.Load(out string? warning);
+
+        Assert.Null(warning);
+        Assert.True(loaded.Ui.KeepOnTop);
+        Assert.Equal(4, loaded.Ui.CalibrationZoom);
+        Assert.Equal(3, loaded.SchemaVersion);
+    }
+
+    [Fact]
+    public void AV2FileLoadsWithUiDefaultsAndKeepsItsAlerts()
+    {
+        Directory.CreateDirectory(_directory);
+        File.WriteAllText(SettingsPath, """
+            {
+              "schemaVersion": 2,
+              "pollIntervalMs": 400,
+              "alerts": { "volumePercent": 40, "ntfyTopic": "mine" }
+            }
+            """);
+
+        AppSettings loaded = new SettingsStore(SettingsPath).Load(out string? warning);
+
+        Assert.Null(warning);
+        Assert.False(loaded.Ui.KeepOnTop);
+        Assert.Equal(2, loaded.Ui.CalibrationZoom);
+        Assert.Equal(40, loaded.Alerts.VolumePercent);
+        Assert.Equal("mine", loaded.Alerts.NtfyTopic);
+    }
+
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(2, 2)]
+    [InlineData(4, 4)]
+    [InlineData(3, 2)]
+    [InlineData(0, 2)]
+    [InlineData(-4, 2)]
+    [InlineData(8, 2)]
+    public void CalibrationZoomOutsideOneTwoFourReadsAsTwo(int stored, int expected)
+    {
+        Assert.Equal(expected, new UiSettings { CalibrationZoom = stored }.EffectiveCalibrationZoom);
+    }
+
+    [Fact]
+    public void SavingAnOlderFileWritesTheCurrentSchemaVersion()
+    {
+        Directory.CreateDirectory(_directory);
+        File.WriteAllText(SettingsPath, "{ \"schemaVersion\": 2, \"pollIntervalMs\": 300 }");
+        var store = new SettingsStore(SettingsPath);
+
+        store.Save(store.Load());
+
+        Assert.Contains($"\"schemaVersion\": {AppSettings.CurrentSchemaVersion}", File.ReadAllText(SettingsPath));
+        Assert.Equal(300, store.Load().PollIntervalMs);
+    }
 }

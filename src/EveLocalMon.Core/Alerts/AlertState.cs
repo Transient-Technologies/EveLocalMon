@@ -14,6 +14,8 @@ public sealed class AlertState
     private readonly StableTracker<int> _threats;
     private readonly StableTracker<Readability> _readability;
     private readonly StableTracker<int?> _memberCount;
+    private ThreatBreakdown _agreedBreakdown = new(0, 0, 0, 0);
+    private int _agreedVisibleRows;
 
     public AlertState(AlertStateOptions options)
     {
@@ -22,6 +24,16 @@ public sealed class AlertState
         _readability = new StableTracker<Readability>(Readability.Full, options.StableFrames);
         _memberCount = new StableTracker<int?>(null, options.StableFrames);
     }
+
+    /// <summary>The debounced view the status header shows, so the header and the alerts it sits above
+    /// agree by construction. Reading it never affects which events are emitted.</summary>
+    public StableView Stable => new(
+        Settled: _threats.Confirmed && _readability.Confirmed,
+        _threats.Stable,
+        _agreedBreakdown,
+        _readability.Stable,
+        _memberCount.Stable,
+        _agreedVisibleRows);
 
     public IReadOnlyList<AlertEvent> Update(Snapshot snapshot, DateTimeOffset now)
     {
@@ -56,6 +68,14 @@ public sealed class AlertState
             events.Add(new MemberCountIncreasedWhileUnreadable(previous, rawCount, now));
         }
 
+        // Only a frame that agrees with the stable values may supply the breakdown text, so a
+        // one-frame flash of a different category never reaches the header.
+        if (snapshot.Threats.Total == _threats.Stable && snapshot.Readability == _readability.Stable)
+        {
+            _agreedBreakdown = snapshot.Threats;
+            _agreedVisibleRows = snapshot.OccupiedFullRows;
+        }
+
         return events;
     }
 
@@ -66,6 +86,9 @@ public sealed class AlertState
         private readonly int _stableFrames;
         private T _pendingValue;
         private int _pendingCount;
+        private T? _lastRaw;
+        private bool _hasLastRaw;
+        private int _runCount;
 
         public StableTracker(T initialStable, int stableFrames)
         {
@@ -77,11 +100,32 @@ public sealed class AlertState
 
         public T Stable { get; private set; }
 
+        /// <summary>True once a run of <c>stableFrames</c> identical readings has been seen. Unlike
+        /// <see cref="Stable"/> the initial value does not count, so "nothing seen yet" and
+        /// "seen, and it really is zero" stay distinguishable.</summary>
+        public bool Confirmed { get; private set; }
+
         /// <summary>Feeds one new raw reading. Returns true (and sets <paramref name="previous"/>)
         /// only on the update where Stable actually changes.</summary>
         public bool Update(T raw, out T previous)
         {
             previous = Stable;
+
+            if (_hasLastRaw && EqualityComparer<T>.Default.Equals(raw, _lastRaw))
+            {
+                _runCount++;
+            }
+            else
+            {
+                _lastRaw = raw;
+                _hasLastRaw = true;
+                _runCount = 1;
+            }
+
+            if (_runCount >= _stableFrames)
+            {
+                Confirmed = true;
+            }
 
             if (EqualityComparer<T>.Default.Equals(raw, _pendingValue))
             {
@@ -103,3 +147,17 @@ public sealed class AlertState
         }
     }
 }
+
+/// <summary>
+/// The debounced state of Local. <paramref name="Breakdown"/> and <paramref name="VisibleRows"/> come
+/// from the latest frame that agreed with the stable threat count and readability.
+/// </summary>
+/// <param name="Settled">False until the threat count and readability have each been read the same way
+/// for the debounce window. Before that the header must say it is still checking, not "clear".</param>
+public sealed record StableView(
+    bool Settled,
+    int Threats,
+    ThreatBreakdown Breakdown,
+    Readability Readability,
+    int? MemberCount,
+    int VisibleRows);

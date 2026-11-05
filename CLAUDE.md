@@ -6,12 +6,13 @@ C# / .NET 10 + Avalonia. Windows first, macOS later.
 
 ## Read first
 
-- `doc/PLAN.md` — overall design, decisions, milestones.
-- `doc/M1-SPEC.md` — detailed spec for M0 (skeleton + capture CLI) and M1 (list reader +
+- `doc/specs/PLAN.md` — overall design, decisions, milestones.
+- `doc/specs/M1-SPEC.md` — detailed spec for M0 (skeleton + capture CLI) and M1 (list reader +
   alert state). It is the source of truth for types, algorithms, thresholds and fixtures.
   If implementation forces a change (e.g. a threshold), update the spec in the same change.
-- `doc/M2-SPEC.md` — spec for the current milestone: Avalonia region picker, calibration
-  auto-detect, live preview, settings, and the `capture` CLI count/dedupe fixes.
+- `doc/specs/M2-SPEC.md`, `doc/specs/M3-SPEC.md` — region picker / live preview, and alerts (implemented).
+- `doc/specs/M4-SPEC.md` — EVE-style UI refresh (implemented): theme, custom chrome, status header,
+  session log, popup/picker/calibration improvements. Next is M5 (tray, template cropper, history).
 
 ## Hard rules
 
@@ -45,7 +46,7 @@ template score, via `ITestOutputHelper`) — tuning a threshold depends on seein
 ## Conventions
 
 - `net10.0` for Core and tests; `net10.0-windows10.0.19041.0` for `Platform.Windows`,
-  `Capture.Cli` and `App`, which reach Win32 capture. macOS (M6) is what splits `App` into
+  `Capture.Cli` and `App`, which reach Win32 capture. macOS (M7) is what splits `App` into
   multi-targeting plus a runtime-selected `IScreenCapture`.
 - `EveLocalMon.App` builds its UI in C#, not XAML: compiler-checked, no designer to keep in sync,
   and preview overlays are composited into the bitmap so what you see is the pixels the reader saw.
@@ -53,6 +54,13 @@ template score, via `ITestOutputHelper`) — tuning a threshold depends on seein
   Windows Focus Assist suppresses native toasts during fullscreen games — the one moment this tool
   exists for. The chime is a WAV synthesised at runtime and played through winmm `PlaySound`, which
   also gives a volume control the OS API doesn't. Don't "improve" either into a dependency.
+- **Colours live in `EveLocalMon.App/Theme/Palette.cs` and nowhere else**; they are sampled from the EVE
+  client (doc/specs/M4-SPEC.md §2.1). Fonts are the embedded Saira SemiCondensed and Share Tech Mono — the
+  Saira files in `assets/fonts` are named one weight off (§2.2), so embed them as the csproj does.
+- The app icon is generated: change its colours with `Palette.cs` in mind and rerun `pwsh tools/make-icon.ps1`
+  (writes `assets/icons/`).
+- Set `EVELOCALMON_DATA_DIR` to run the app against a scratch settings folder; do this whenever testing
+  with Start pressed, because a live EVE window will fire real alerts.
 - Nullable enabled, implicit usings, file-scoped namespaces, `TreatWarningsAsErrors` in Core.
 - Immutable data as `record` / `readonly record struct`; pure functions for detection.
 - Pixel buffers are BGRA8888, top-down, `Stride` bytes per row. Coordinates are physical

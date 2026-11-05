@@ -34,16 +34,19 @@ public sealed class AlertDispatcher(
 
     public void Unmute() => MutedUntil = null;
 
-    public async Task DispatchAsync(IEnumerable<AlertEvent> events, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<DispatchOutcome>> DispatchAsync(IEnumerable<AlertEvent> events, CancellationToken cancellationToken = default)
     {
+        var outcomes = new List<DispatchOutcome>();
         foreach (AlertEvent alertEvent in events)
         {
             AlertMessage message = AlertMessageFactory.Create(alertEvent);
-            await DispatchAsync(message, cancellationToken).ConfigureAwait(false);
+            outcomes.Add(await DispatchAsync(message, cancellationToken).ConfigureAwait(false));
         }
+
+        return outcomes;
     }
 
-    public async Task DispatchAsync(AlertMessage message, CancellationToken cancellationToken = default)
+    public async Task<DispatchOutcome> DispatchAsync(AlertMessage message, CancellationToken cancellationToken = default)
     {
         AlertChannelSet channels = Settings.ChannelsFor(message.Kind);
         DateTimeOffset now = _time.GetUtcNow();
@@ -52,39 +55,57 @@ public sealed class AlertDispatcher(
         // Local is clear while it is muted.
         bool muted = IsMuted;
 
-        if (channels.Popup && presenter is not null && Allow(ref _lastPopup, now, Settings.PopupMinIntervalMs))
+        ChannelResult popup = ChannelResult.Disabled;
+        if (channels.Popup && presenter is not null)
         {
-            Run(() => presenter.Present(message), "popup");
+            popup = !Allow(ref _lastPopup, now, Settings.PopupMinIntervalMs)
+                ? ChannelResult.RateLimited
+                : Run(() => presenter.Present(message), "popup");
         }
 
-        if (channels.Sound && !muted && soundPlayer is not null && Allow(ref _lastSound, now, Settings.SoundMinIntervalMs))
+        ChannelResult sound = ChannelResult.Disabled;
+        if (channels.Sound && soundPlayer is not null)
         {
-            Run(() => soundPlayer.Play(GetWav()), "sound");
+            sound = muted ? ChannelResult.Muted
+                : !Allow(ref _lastSound, now, Settings.SoundMinIntervalMs) ? ChannelResult.RateLimited
+                : Run(() => soundPlayer.Play(GetWav()), "sound");
         }
 
-        if (channels.Ntfy && !muted && ntfyClient is not null && Allow(ref _lastNtfy, now, Settings.NtfyMinIntervalMs))
+        ChannelResult ntfy = ChannelResult.Disabled;
+        if (channels.Ntfy && ntfyClient is not null)
         {
-            string? topic = Settings.NtfyTopic;
-            if (string.IsNullOrWhiteSpace(topic))
+            ntfy = muted ? ChannelResult.Muted
+                : !Allow(ref _lastNtfy, now, Settings.NtfyMinIntervalMs) ? ChannelResult.RateLimited
+                : await SendNtfyAsync(ntfyClient, message, cancellationToken).ConfigureAwait(false);
+        }
+
+        return new DispatchOutcome(sound, popup, ntfy);
+    }
+
+    private async Task<ChannelResult> SendNtfyAsync(INtfyClient ntfyClient, AlertMessage message, CancellationToken cancellationToken)
+    {
+        string? topic = Settings.NtfyTopic;
+        if (string.IsNullOrWhiteSpace(topic))
+        {
+            ChannelFailed?.Invoke("ntfy: no topic configured.");
+            return ChannelResult.Failed;
+        }
+
+        try
+        {
+            bool sent = await ntfyClient.SendAsync(message, new NtfyOptions(Settings.NtfyServer, topic), cancellationToken)
+                .ConfigureAwait(false);
+            if (!sent)
             {
-                ChannelFailed?.Invoke("ntfy: no topic configured.");
+                ChannelFailed?.Invoke("ntfy: send failed.");
             }
-            else
-            {
-                try
-                {
-                    bool sent = await ntfyClient.SendAsync(message, new NtfyOptions(Settings.NtfyServer, topic), cancellationToken)
-                        .ConfigureAwait(false);
-                    if (!sent)
-                    {
-                        ChannelFailed?.Invoke("ntfy: send failed.");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    ChannelFailed?.Invoke($"ntfy: {ex.Message}");
-                }
-            }
+
+            return sent ? ChannelResult.Sent : ChannelResult.Failed;
+        }
+        catch (Exception ex)
+        {
+            ChannelFailed?.Invoke($"ntfy: {ex.Message}");
+            return ChannelResult.Failed;
         }
     }
 
@@ -113,15 +134,17 @@ public sealed class AlertDispatcher(
         return true;
     }
 
-    private void Run(Action action, string channel)
+    private ChannelResult Run(Action action, string channel)
     {
         try
         {
             action();
+            return ChannelResult.Sent;
         }
         catch (Exception ex)
         {
             ChannelFailed?.Invoke($"{channel}: {ex.Message}");
+            return ChannelResult.Failed;
         }
     }
 

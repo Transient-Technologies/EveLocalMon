@@ -1,9 +1,9 @@
 [
-  { "name": "green-star", "file": "green-star.png", "category": "Friendly" },
-  { "name": "purple-person", "file": "purple-person.png", "category": "Friendly" },
-  { "name": "blue-star", "file": "blue-star.png", "category": "Friendly" },
-  { "name": "blue-plus", "file": "blue-plus.png", "category": "Friendly" },
-  { "name": "red-minus", "file": "red-minus.png", "category": "Enemy" },
-  { "name": "orange-minus", "file": "orange-minus.png", "category": "Enemy" },
-  { "name": "gray-equals", "file": "gray-equals.png", "category": "Neutral" }
+  { "name": "green-star", "file": "green-star.png", "category": "Friendly", "color": "#3ca03c" },
+  { "name": "purple-person", "file": "purple-person.png", "category": "Friendly", "color": "#9a40d8" },
+  { "name": "blue-star", "file": "blue-star.png", "category": "Friendly", "color": "#306cbc" },
+  { "name": "blue-plus", "file": "blue-plus.png", "category": "Friendly", "color": "#306cbc" },
+  { "name": "red-minus", "file": "red-minus.png", "category": "Enemy", "color": "#fc4444" },
+  { "name": "orange-minus", "file": "orange-minus.png", "category": "Enemy", "color": "#e05a10" },
+  { "name": "gray-equals", "file": "gray-equals.png", "category": "Neutral", "color": "#888888" }
 ]

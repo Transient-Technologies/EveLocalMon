@@ -5,6 +5,9 @@ public enum AlertKind
     ThreatIncreased,
     LocalClear,
     Unreadable,
+    /// <summary>Local is too long to read in full. Routed exactly like <see cref="Unreadable"/>; split
+    /// out only so the popup can draw a different icon.</summary>
+    Overflow,
     Readable,
     MemberCountWhileUnreadable,
 }

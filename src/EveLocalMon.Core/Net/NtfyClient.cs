@@ -28,7 +28,8 @@ public sealed class NtfyClient(HttpClient httpClient) : INtfyClient
                 };
 
                 request.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain") { CharSet = "utf-8" };
-                request.Headers.TryAddWithoutValidation("Title", message.Title);
+                // The popup sits next to the game and needs no app name; a phone notification does.
+                request.Headers.TryAddWithoutValidation("Title", TitleHeader(message));
                 request.Headers.TryAddWithoutValidation("Priority", PriorityHeader(message.Priority));
                 request.Headers.TryAddWithoutValidation("Tags", TagsHeader(message.Kind));
 
@@ -50,6 +51,8 @@ public sealed class NtfyClient(HttpClient httpClient) : INtfyClient
         return false;
     }
 
+    private static string TitleHeader(AlertMessage message) => "EVE: " + message.Title;
+
     private static Uri BuildUri(NtfyOptions options) => new($"{options.Server.TrimEnd('/')}/{options.Topic}");
 
     private static string PriorityHeader(AlertPriority priority) => priority switch
@@ -62,7 +65,7 @@ public sealed class NtfyClient(HttpClient httpClient) : INtfyClient
     private static string TagsHeader(AlertKind kind) => kind switch
     {
         AlertKind.ThreatIncreased => "rotating_light",
-        AlertKind.Unreadable or AlertKind.MemberCountWhileUnreadable => "warning",
+        AlertKind.Unreadable or AlertKind.Overflow or AlertKind.MemberCountWhileUnreadable => "warning",
         _ => "white_check_mark",
     };
 }

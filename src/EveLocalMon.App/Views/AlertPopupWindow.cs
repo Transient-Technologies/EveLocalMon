@@ -1,7 +1,5 @@
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Input;
-using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using EveLocalMon.Core.Alerts;
@@ -12,15 +10,25 @@ namespace EveLocalMon.App.Views;
 /// The app's own notification, deliberately not a Windows toast: Focus Assist / Do Not Disturb
 /// routinely suppresses toast banners during fullscreen games, which is exactly when this alert
 /// matters. <see cref="Window.ShowActivated"/> is false so it never takes focus off the game.
+///
+/// The window is larger than the card by <see cref="ShadowMargin"/> on every side, so the card's
+/// shadow has somewhere to draw on a transparent window.
 /// </summary>
 public sealed class AlertPopupWindow : Window
 {
-    public const double PopupWidth = 360;
-    public const double PopupHeight = 104;
+    public const double ShadowMargin = 8;
+    public const double PopupWidth = AlertPopupView.ViewWidth + (2 * ShadowMargin);
+    public const double PopupHeight = AlertPopupView.ViewHeight + (2 * ShadowMargin);
 
-    private readonly DispatcherTimer _autoDismiss;
+    private static readonly TimeSpan Tick = TimeSpan.FromMilliseconds(33);
 
-    public AlertPopupWindow(AlertMessage message, TimeSpan lifetime)
+    private readonly AlertPopupView _view;
+    private readonly DispatcherTimer _timer;
+    private readonly TimeSpan _lifetime;
+    private TimeSpan _remaining;
+    private bool _hovering;
+
+    public AlertPopupWindow(AlertMessage message, string meta, TimeSpan lifetime)
     {
         WindowDecorations = WindowDecorations.None;
         Topmost = true;
@@ -33,59 +41,42 @@ public sealed class AlertPopupWindow : Window
         Background = Brushes.Transparent;
         TransparencyLevelHint = new[] { WindowTransparencyLevel.Transparent };
 
-        Color accent = message.Priority switch
-        {
-            AlertPriority.Urgent => Color.FromRgb(0xD9, 0x3A, 0x3A),
-            AlertPriority.High => Color.FromRgb(0xE0, 0x93, 0x1E),
-            _ => Color.FromRgb(0x6B, 0x7A, 0x86),
-        };
-
-        Content = new Border
-        {
-            Background = new SolidColorBrush(Color.FromRgb(0x1A, 0x1D, 0x21)),
-            BorderBrush = new SolidColorBrush(accent),
-            BorderThickness = new Thickness(2),
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(12, 10),
-            Child = new StackPanel
-            {
-                Spacing = 4,
-                Children =
-                {
-                    new TextBlock
-                    {
-                        Text = message.Title,
-                        FontWeight = FontWeight.Bold,
-                        FontSize = 14,
-                        Foreground = new SolidColorBrush(accent),
-                        TextTrimming = TextTrimming.CharacterEllipsis,
-                    },
-                    new TextBlock
-                    {
-                        Text = message.Body,
-                        FontSize = 12,
-                        Foreground = Brushes.WhiteSmoke,
-                        TextWrapping = TextWrapping.Wrap,
-                        MaxLines = 2,
-                        TextTrimming = TextTrimming.CharacterEllipsis,
-                    },
-                    new TextBlock
-                    {
-                        Text = message.At.ToLocalTime().ToString("HH:mm:ss"),
-                        FontSize = 10,
-                        Foreground = Brushes.Gray,
-                        HorizontalAlignment = HorizontalAlignment.Right,
-                    },
-                },
-            },
-        };
+        _lifetime = lifetime;
+        _remaining = lifetime;
+        _view = new AlertPopupView(message, meta) { Margin = new Thickness(ShadowMargin) };
+        Content = _view;
 
         PointerPressed += (_, _) => Close();
 
-        _autoDismiss = new DispatcherTimer { Interval = lifetime };
-        _autoDismiss.Tick += (_, _) => Close();
-        _autoDismiss.Start();
+        // Hovering holds the card open and refills it: the user is reading it.
+        PointerEntered += (_, _) =>
+        {
+            _hovering = true;
+            _remaining = _lifetime;
+            _view.SetRemaining(1);
+        };
+        PointerExited += (_, _) => _hovering = false;
 
-        Closed += (_, _) => _autoDismiss.Stop();
+        _timer = new DispatcherTimer { Interval = Tick };
+        _timer.Tick += OnTick;
+        _timer.Start();
+
+        Closed += (_, _) => _timer.Stop();
+    }
+
+    private void OnTick(object? sender, EventArgs e)
+    {
+        if (_hovering)
+        {
+            return;
+        }
+
+        _remaining -= Tick;
+        _view.SetRemaining(_remaining / _lifetime);
+
+        if (_remaining <= TimeSpan.Zero)
+        {
+            Close();
+        }
     }
 }

@@ -1,357 +1,333 @@
-using System.Text;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
-using Avalonia.Media;
-using Avalonia.Media.Imaging;
 using Avalonia.Threading;
-using EveLocalMon.App.Rendering;
+using EveLocalMon.App.Controls;
 using EveLocalMon.App.Services;
+using EveLocalMon.App.Theme;
 using EveLocalMon.Core.Alerts;
 using EveLocalMon.Core.Audio;
 using EveLocalMon.Core.Imaging;
 using EveLocalMon.Core.Net;
 using EveLocalMon.Core.Reading;
 using EveLocalMon.Core.Settings;
+using EveLocalMon.Core.Status;
 using EveLocalMon.Platform.Windows;
+using CorePixelRect = EveLocalMon.Core.Imaging.PixelRect;
 
 namespace EveLocalMon.App.Views;
 
+/// <summary>
+/// The shell (doc/specs/M4-SPEC.md §5): title bar, status header, tabs and footer. It owns the services
+/// and the run state and wires them to the three tab views; the views only draw. Every change saves
+/// when it is made, so there is no Save button.
+/// </summary>
 public sealed class MainWindow : Window
 {
+    private enum Tab
+    {
+        Monitor,
+        Alerts,
+        Calibration,
+    }
+
     private readonly SettingsStore _settingsStore = new();
     private readonly MonitorLoop _loop = new();
-    private readonly Image _preview = new() { HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
-    private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
-    private readonly TextBlock _notes = new() { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Gray };
-    private readonly TextBlock _rowTable = new() { FontFamily = new FontFamily("Consolas, Menlo, monospace"), FontSize = 11 };
-    private readonly CalibrationPanel _calibrationPanel = new();
-    private readonly AlertsPanel _alertsPanel = new();
-    private readonly Button _startStop = new() { Content = "Start", Width = 90 };
-    private readonly NumericUpDown _interval = new() { Minimum = 100, Maximum = 5000, Increment = 100, FormatString = "0", Width = 90 };
-
     private readonly HttpClient _httpClient = new();
     private readonly WinmmSoundPlayer _soundPlayer = new();
     private readonly AlertPresenter _presenter;
     private readonly AlertDispatcher _dispatcher;
-    private AlertState _alertState = new(new AlertStateOptions());
+    private readonly SessionLog _sessionLog = new();
+    private readonly DispatcherTimer _clock = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly string _version;
+
+    private readonly TitleBar _titleBar;
+    private readonly Border _stateLine = new() { Height = 2 };
+    private readonly StatusHeader _header = new();
+    private readonly MonitorTab _monitorTab = new();
+    private readonly AlertsTab _alertsTab = new();
+    private readonly CalibrationTab _calibrationTab = new();
+    private readonly TabButton[] _tabButtons;
+    private readonly TextBlock _regionText = Ui.Label("");
+    private readonly Control _regionControls;
+    private readonly Control _alertsHint = Ui.Label("Changes apply and save immediately");
+    private readonly TextBlock _footerMessage = Ui.Label("");
+    private readonly StateDot _calibrationDot = new(6);
+    private readonly TextBlock _calibrationText = Ui.Label("");
 
     private AppSettings _settings;
     private TemplateSet _templates;
-    private WriteableBitmap? _bitmap;
+    private AlertState _alertState = new(new AlertStateOptions());
+    private Tab _tab = Tab.Monitor;
+    private Frame? _lastFrame;
+    private DateTimeOffset? _lastTick;
+    private string? _captureError;
+    private string? _lastLoggedError;
+    private string _calibrationSource = "none";
+    private bool _wasMuted;
 
     public MainWindow()
     {
-        Title = "EveLocalMon — region, preview & alerts";
-        Width = 1020;
-        Height = 820;
+        _version = typeof(MainWindow).Assembly.GetName().Version is { } v ? $"{v.Major}.{v.Minor}" : "0";
+
+        Title = "EveLocalMon";
+        Width = 1120;
+        Height = 740;
+        MinWidth = 900;
+        MinHeight = 600;
+        WindowDecorations = WindowDecorations.BorderOnly;
+        Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://EveLocalMon/Assets/EveLocalMon.png")));
 
         _settings = _settingsStore.Load(out string? warning);
         string templatesDirectory = _settings.TemplatesDirectory ?? TemplateSeeder.EnsureSeeded();
         _templates = LoadTemplates(templatesDirectory);
-        _interval.Value = _settings.PollIntervalMs;
 
-        _presenter = new AlertPresenter(this, () => _settings.Region);
-        _dispatcher = new AlertDispatcher(_soundPlayer, _presenter, new NtfyClient(_httpClient))
+        _presenter = new AlertPresenter(this, () => _settings.Region, DescribeForPopup);
+        _dispatcher = new AlertDispatcher(_soundPlayer, _presenter, new NtfyClient(_httpClient)) { Settings = _settings.Alerts };
+        _dispatcher.ChannelFailed += message => Dispatcher.UIThread.Post(() => OnChannelFailed(message));
+
+        _titleBar = new TitleBar(_version) { IsPinned = _settings.Ui.KeepOnTop };
+        Topmost = _settings.Ui.KeepOnTop;
+        _titleBar.PinToggled += OnPinToggled;
+
+        _regionControls = BuildRegionControls();
+        _tabButtons = [new TabButton("Monitor"), new TabButton("Alerts"), new TabButton("Calibration")];
+        for (int i = 0; i < _tabButtons.Length; i++)
         {
-            Settings = _settings.Alerts,
-        };
-        _dispatcher.ChannelFailed += message => Dispatcher.UIThread.Post(() => _alertsPanel.SetStatus(message));
+            Tab tab = (Tab)i;
+            _tabButtons[i].Click += (_, _) => ShowTab(tab);
+        }
 
-        RenderOptions.SetBitmapInterpolationMode(_preview, BitmapInterpolationMode.None);
-        _calibrationPanel.Value = _settings.Calibration;
-        _calibrationPanel.Applied += OnCalibrationApplied;
-
-        _alertsPanel.Value = _settings.Alerts;
-        _alertsPanel.Changed += OnAlertSettingsChanged;
-        _alertsPanel.TestRequested += which => _ = TestChannelAsync(which);
-        _alertsPanel.MuteRequested += OnMuteRequested;
-
+        WireViews();
         Content = BuildLayout();
 
+        _monitorTab.SetLog(_sessionLog);
+        _alertsTab.Value = _settings.Alerts;
+        _header.IntervalMs = _settings.PollIntervalMs;
+        _calibrationTab.Zoom = _settings.Ui.EffectiveCalibrationZoom;
+        _calibrationTab.SetCalibration(_settings.Calibration);
+        _calibrationSource = _settings.Calibration is null ? "none" : "saved";
+        if (_settings.Calibration is not null)
+        {
+            _calibrationTab.SetDetection(null, null, "Using the calibration saved last time. Press Re-detect to measure again.");
+        }
+
         _loop.Updated += OnMonitorUpdate;
+        _loop.Ticked += at => _lastTick = at;
+        _clock.Tick += (_, _) => OnClock();
+        _clock.Start();
         Closing += (_, _) => Shutdown();
 
-        SetStatus(warning is not null
-            ? warning
-            : _settings.Region is null
-                ? "No region selected yet — click \"Select region…\" and drag around EVE's Local member list."
-                : $"Region {Describe(_settings.Region.Value)} loaded. Press Start to watch it.");
+        ShowTab(Tab.Monitor);
+        RefreshAll();
+
+        if (warning is not null)
+        {
+            SetFooter(warning);
+            _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Error, "Settings", warning);
+        }
+        else
+        {
+            SetFooter(_settings.Region is null
+                ? "No region selected yet — click Select region… and drag around EVE's Local member list."
+                : $"Region {Describe(_settings.Region.Value)} loaded. Press Start watching.");
+        }
+
+        // One frame up front so the preview and guides are not empty before the first Start.
+        Opened += (_, _) => ShowStaticFrame();
+    }
+
+    private void WireViews()
+    {
+        _header.StartStopClicked += ToggleMonitoring;
+        _header.MuteClicked += OnHeaderMuteClicked;
+        _header.IntervalChanged += OnIntervalChanged;
+
+        _alertsTab.Changed += OnAlertSettingsChanged;
+        _alertsTab.TestRequested += channel => _ = TestChannelAsync(channel);
+        _alertsTab.MuteRequested += OnMuteRequested;
+        _alertsTab.VolumePreviewRequested += volume => PlayChime(volume);
+
+        _calibrationTab.Applied += OnCalibrationApplied;
+        _calibrationTab.RedetectRequested += RedetectCalibration;
+        _calibrationTab.ZoomChanged += zoom =>
+        {
+            _settings = _settings with { Ui = _settings.Ui with { CalibrationZoom = zoom } };
+            Save();
+        };
+        _calibrationTab.DirtyChanged += dirty => _tabButtons[(int)Tab.Calibration].Text = dirty ? "Calibration •" : "Calibration";
     }
 
     private Control BuildLayout()
     {
-        var selectRegion = new Button { Content = "Select region…" };
-        selectRegion.Click += async (_, _) => await SelectRegionAsync();
-
-        _startStop.Click += (_, _) => ToggleMonitoring();
-
-        var redetect = new Button { Content = "Re-detect calibration" };
-        redetect.Click += (_, _) => RedetectCalibration();
-
-        var save = new Button { Content = "Save settings" };
-        save.Click += (_, _) => SaveSettings();
-
-        var toolbar = new StackPanel
+        var tabStrip = new Border
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
-            Margin = new Avalonia.Thickness(8),
-            Children =
+            Height = 36,
+            Background = Palette.TabStrip.Brush,
+            BorderBrush = Palette.Divider.Brush,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(14, 0),
+            Child = new Grid
             {
-                selectRegion,
-                _startStop,
-                redetect,
-                save,
-                new TextBlock { Text = "Interval (ms)", VerticalAlignment = VerticalAlignment.Center },
-                _interval,
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                Children =
+                {
+                    new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Bottom, Children = { _tabButtons[0], _tabButtons[1], _tabButtons[2] } },
+                    Placed(new Panel { Children = { _regionControls, _alertsHint }, VerticalAlignment = VerticalAlignment.Center }, 1),
+                },
             },
         };
 
-        var side = new StackPanel
+        var footer = new Border
         {
-            Spacing = 10,
-            Margin = new Avalonia.Thickness(8),
-            Width = 330,
-            Children =
+            Height = 26,
+            Background = Palette.Panel.Brush,
+            BorderBrush = Palette.Divider.Brush,
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(12, 0),
+            Child = new Grid
             {
-                _status,
-                _notes,
-                _alertsPanel,
-                _calibrationPanel,
-                new TextBlock { Text = "Rows", FontWeight = FontWeight.SemiBold },
-                _rowTable,
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                Children =
+                {
+                    _footerMessage,
+                    Placed(Ui.Row(6, _calibrationDot, _calibrationText), 1),
+                },
             },
         };
 
-        var layout = new DockPanel();
-        DockPanel.SetDock(toolbar, Dock.Top);
-        layout.Children.Add(toolbar);
+        var body = new Panel { Children = { _monitorTab, _alertsTab, _calibrationTab } };
 
-        var sideScroll = new ScrollViewer { Content = side, Width = 350 };
-        DockPanel.SetDock(sideScroll, Dock.Right);
-        layout.Children.Add(sideScroll);
-
-        layout.Children.Add(new ScrollViewer
-        {
-            Content = _preview,
-            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
-            Margin = new Avalonia.Thickness(8),
-        });
-
+        var layout = new Grid { RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,*,Auto") };
+        Add(_titleBar, 0);
+        Add(_stateLine, 1);
+        Add(_header, 2);
+        Add(tabStrip, 3);
+        Add(body, 4);
+        Add(footer, 5);
         return layout;
-    }
 
-    private async Task SelectRegionAsync()
-    {
-        bool wasRunning = _loop.IsRunning;
-        _loop.Stop();
-        _startStop.Content = "Start";
-
-        // Get out of our own screenshot before the overlay goes up.
-        WindowState = WindowState.Minimized;
-        await Task.Delay(200);
-
-        PixelRect? picked = await RegionPickerWindow.PickAsync(this);
-
-        WindowState = WindowState.Normal;
-        Activate();
-
-        if (picked is not { } region || region.Width < 20 || region.Height < 20)
+        void Add(Control control, int row)
         {
-            SetStatus("Region selection cancelled; nothing changed.");
-            return;
-        }
-
-        _settings = _settings with { Region = region };
-        RedetectCalibration();
-        SaveSettings();
-
-        if (wasRunning)
-        {
-            ToggleMonitoring();
+            Grid.SetRow(control, row);
+            layout.Children.Add(control);
         }
     }
 
-    private void RedetectCalibration()
+    private Control BuildRegionControls()
     {
-        if (_settings.Region is not { } region)
+        Button select = Ui.Button(IconKind.Region, "Select region…", dense: true, onClick: () => _ = SelectRegionAsync());
+        return Ui.Row(12, _regionText, select);
+    }
+
+    private static Control Placed(Control control, int column)
+    {
+        Grid.SetColumn(control, column);
+        return control;
+    }
+
+    // ---- tabs ----------------------------------------------------------------------------------
+
+    private void ShowTab(Tab tab)
+    {
+        _tab = tab;
+        _monitorTab.IsVisible = tab == Tab.Monitor;
+        _alertsTab.IsVisible = tab == Tab.Alerts;
+        _calibrationTab.IsVisible = tab == Tab.Calibration;
+        _header.Compact = tab != Tab.Monitor;
+        _regionControls.IsVisible = tab != Tab.Alerts;
+        _alertsHint.IsVisible = tab == Tab.Alerts;
+
+        for (int i = 0; i < _tabButtons.Length; i++)
         {
-            SetStatus("Select a region first.");
-            return;
+            _tabButtons[i].IsActive = i == (int)tab;
         }
 
-        try
+        if (tab == Tab.Calibration)
         {
-            Frame frame = CaptureOnce(region);
-            DetectionResult detection = CalibrationDetector.Detect(frame);
-
-            _notes.Text = string.Join(Environment.NewLine, detection.Notes);
-
-            if (detection.Calibration is null)
+            if (_lastFrame is null)
             {
-                SetStatus($"⚠ Auto-detect failed. {detection.Notes.FirstOrDefault()} " +
-                    "Re-drag the region around just the member list, or set the numbers by hand.");
-                RenderPreview(frame, null, null);
-                return;
+                ShowStaticFrame();
             }
-
-            _settings = _settings with { Calibration = detection.Calibration };
-            _calibrationPanel.Value = detection.Calibration;
-
-            Snapshot snapshot = LocalListReader.Read(frame, detection.Calibration, _templates);
-            RenderPreview(frame, snapshot, detection.Calibration);
-
-            // A too-wide region is the classic mis-drag: it catches the chat log, whose coloured
-            // text can masquerade as an icon column. Say so before the counts get trusted.
-            string widthWarning = region.Width > 400
-                ? $" ⚠ That region is {region.Width}px wide — a Local member list is usually ~150px. " +
-                  "If the rows below look wrong, re-drag around just the member list."
-                : string.Empty;
-
-            string confidenceWarning = detection.Confidence == DetectionConfidence.Good
-                ? string.Empty
-                : $" ⚠ Confidence {detection.Confidence} — check the numbers before trusting the counts.";
-
-            SetStatus($"Detected calibration for region {Describe(region)}.{confidenceWarning}{widthWarning}", snapshot);
-        }
-        catch (Exception ex)
-        {
-            SetStatus($"Capture failed: {ex.Message}");
-        }
-    }
-
-    private void OnCalibrationApplied(Calibration calibration)
-    {
-        _settings = _settings with { Calibration = calibration };
-
-        if (_loop.IsRunning)
-        {
-            ToggleMonitoring();
-            ToggleMonitoring();
-            return;
-        }
-
-        if (_settings.Region is { } region)
-        {
-            try
+            else
             {
-                Frame frame = CaptureOnce(region);
-                Snapshot snapshot = LocalListReader.Read(frame, calibration, _templates);
-                RenderPreview(frame, snapshot, calibration);
-                SetStatus("Calibration applied.", snapshot);
-            }
-            catch (Exception ex)
-            {
-                SetStatus($"Capture failed: {ex.Message}");
+                _calibrationTab.SetFrame(_lastFrame, RenderScaling);
             }
         }
     }
 
-    private void OnAlertSettingsChanged(AlertSettings alerts)
-    {
-        _settings = _settings with { Alerts = alerts };
-        _dispatcher.Settings = alerts;
-        _settingsStore.Save(_settings);
-        _alertsPanel.SetStatus("Alert settings applied and saved.");
-    }
-
-    private void OnMuteRequested(TimeSpan? duration)
-    {
-        if (duration is { } window)
-        {
-            _dispatcher.MuteFor(window);
-            _alertsPanel.SetStatus($"Muted until {DateTimeOffset.Now.Add(window):HH:mm:ss} — popups still appear.");
-        }
-        else
-        {
-            _dispatcher.Unmute();
-            _alertsPanel.SetStatus("Unmuted.");
-        }
-    }
-
-    private async Task TestChannelAsync(string channel)
-    {
-        var message = new AlertMessage(
-            AlertKind.ThreatIncreased,
-            "EVE: hostile in Local",
-            "1 red — 1 threat visible (test alert)",
-            AlertPriority.Urgent,
-            DateTimeOffset.Now);
-
-        AlertSettings alerts = _alertsPanel.Value;
-
-        try
-        {
-            switch (channel)
-            {
-                case "sound":
-                    _soundPlayer.Play(AlertTone.BuildWav(alerts.VolumePercent));
-                    _alertsPanel.SetStatus("Sound: played the built-in chime.");
-                    break;
-                case "popup":
-                    _presenter.Present(message);
-                    _alertsPanel.SetStatus("Popup: shown near the watched region.");
-                    break;
-                case "ntfy":
-                    if (string.IsNullOrWhiteSpace(alerts.NtfyTopic))
-                    {
-                        _alertsPanel.SetStatus("ntfy: set a topic first (use Generate topic).");
-                        return;
-                    }
-
-                    bool sent = await new NtfyClient(_httpClient)
-                        .SendAsync(message, new NtfyOptions(alerts.NtfyServer, alerts.NtfyTopic));
-                    _alertsPanel.SetStatus(sent
-                        ? $"ntfy: sent to {alerts.NtfyServer.TrimEnd('/')}/{alerts.NtfyTopic}"
-                        : "ntfy: failed — check the server and topic.");
-                    break;
-            }
-        }
-        catch (Exception ex)
-        {
-            _alertsPanel.SetStatus($"{channel}: {ex.Message}");
-        }
-    }
+    // ---- monitoring ----------------------------------------------------------------------------
 
     private void ToggleMonitoring()
     {
         if (_loop.IsRunning)
         {
-            _loop.Stop();
-            _startStop.Content = "Start";
+            StopMonitoring();
             return;
         }
 
         if (_settings.Region is not { } region)
         {
-            SetStatus("Select a region first.");
+            SetFooter("Select a region first.");
+            RefreshAll();
             return;
         }
 
-        int interval = (int)(_interval.Value ?? 500);
-        _settings = _settings with { PollIntervalMs = interval };
+        StartLoop(region);
+        _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Info, "Watching started", $"Region {Describe(region)} · every {_settings.PollIntervalMs} ms");
+        RefreshAll();
+    }
 
-        // Fresh alert state per run: stale debounce history from a previous session must not fire
-        // an alert the moment monitoring resumes.
+    private void StartLoop(CorePixelRect region)
+    {
+        // Fresh alert state per run: stale debounce history from a previous session must not fire an
+        // alert the moment monitoring resumes, and each run begins in "Checking".
         _alertState = new AlertState(new AlertStateOptions());
+        _captureError = null;
+        _lastLoggedError = null;
+        _lastTick = null;
+        _loop.Start(region, _settings.Calibration, _templates, _settings.PollIntervalMs);
+    }
 
-        _loop.Start(region, _settings.Calibration, _templates, interval);
-        _startStop.Content = "Stop";
+    private void StopMonitoring()
+    {
+        _loop.Stop();
+        _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Info, "Watching stopped");
+        RefreshAll();
+    }
+
+    private void RestartIfRunning()
+    {
+        if (_loop.IsRunning && _settings.Region is { } region)
+        {
+            StartLoop(region);
+        }
     }
 
     private void OnMonitorUpdate(MonitorUpdate update)
     {
         if (update.Error is not null)
         {
-            SetStatus($"Capture failed: {update.Error}");
+            _captureError = update.Error;
+            if (_lastLoggedError != update.Error)
+            {
+                _lastLoggedError = update.Error;
+                _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Error, "Capture failed", update.Error);
+            }
+
+            RefreshAll();
             return;
         }
 
-        RenderPreview(update.Frame, update.Snapshot, _settings.Calibration);
-        SetStatus(_settings.Calibration is null
-            ? "Watching (no calibration yet — press \"Re-detect calibration\")."
-            : "Watching.", update.Snapshot);
+        _captureError = null;
+        _lastLoggedError = null;
+        _lastFrame = update.Frame;
+
+        _monitorTab.ShowFrame(update.Frame, update.Snapshot, _settings.Calibration, _templates, RenderScaling);
+        if (_tab == Tab.Calibration)
+        {
+            _calibrationTab.SetFrame(update.Frame, RenderScaling);
+        }
 
         if (update.Snapshot is { } snapshot)
         {
@@ -361,101 +337,430 @@ public sealed class MainWindow : Window
                 _ = DispatchAsync(events);
             }
         }
+
+        RefreshAll();
     }
 
     private async Task DispatchAsync(IReadOnlyList<AlertEvent> events)
     {
         try
         {
-            await _dispatcher.DispatchAsync(events);
-            AlertMessage last = AlertMessageFactory.Create(events[^1]);
-            _alertsPanel.SetStatus($"{last.At.ToLocalTime():HH:mm:ss}  {last.Title} — {last.Body}");
+            IReadOnlyList<DispatchOutcome> outcomes = await _dispatcher.DispatchAsync(events);
+            for (int i = 0; i < events.Count; i++)
+            {
+                AlertMessage message = AlertMessageFactory.Create(events[i]);
+                _sessionLog.Add(message.At, KindFor(message.Kind), message.Title, $"{message.Body}\n{outcomes[i].Describe()}");
+                RecordNtfyOutcome(outcomes[i].Ntfy, message.At);
+            }
         }
         catch (Exception ex)
         {
-            _alertsPanel.SetStatus($"Alert dispatch failed: {ex.Message}");
+            _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Error, "Alert dispatch failed", ex.Message);
         }
     }
 
-    private void RenderPreview(Frame frame, Snapshot? snapshot, Calibration? calibration)
+    private static SessionEntryKind KindFor(AlertKind kind) => kind switch
     {
-        if (_bitmap is null || _bitmap.PixelSize.Width != frame.Width || _bitmap.PixelSize.Height != frame.Height)
+        AlertKind.ThreatIncreased => SessionEntryKind.Threat,
+        AlertKind.Unreadable or AlertKind.Overflow or AlertKind.MemberCountWhileUnreadable => SessionEntryKind.Unreadable,
+        _ => SessionEntryKind.Clear,
+    };
+
+    private void RecordNtfyOutcome(ChannelResult result, DateTimeOffset at)
+    {
+        switch (result)
         {
-            _bitmap = PreviewRenderer.CreateBitmap(frame.Width, frame.Height);
-            _preview.Source = _bitmap;
+            case ChannelResult.Sent:
+                _alertsTab.SetNtfyStatus($"last send delivered {at.ToLocalTime():HH:mm}", NtfyHealth.Delivered);
+                break;
+            case ChannelResult.Failed:
+                _alertsTab.SetNtfyStatus($"last send failed {at.ToLocalTime():HH:mm}", NtfyHealth.Failed);
+                break;
         }
-
-        PreviewRenderer.Render(_bitmap, frame, snapshot, calibration);
-
-        // Show physical pixels 1:1 whatever the monitor scaling, so the preview matches what the
-        // reader sees rather than a resampled approximation of it.
-        _preview.Width = frame.Width / RenderScaling;
-        _preview.Height = frame.Height / RenderScaling;
-        _preview.InvalidateVisual();
-
-        _rowTable.Text = snapshot is null ? string.Empty : BuildRowTable(snapshot);
     }
 
-    private void SetStatus(string message, Snapshot? snapshot = null)
+    private void OnChannelFailed(string message)
     {
-        if (snapshot is null)
+        _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Error, "Channel failed", message);
+        SetFooter(message);
+    }
+
+    /// <summary>The popup's grey third line, read from the same debounced view the header shows.</summary>
+    private string DescribeForPopup(AlertMessage message)
+    {
+        StableView view = _alertState.Stable;
+        string rows = view.Readability switch
         {
-            _status.Text = message;
+            Readability.Full => "all rows readable",
+            Readability.Overflow => view.MemberCount is { } total ? $"{view.VisibleRows} of {total} rows readable" : $"{view.VisibleRows} rows readable",
+            _ => "member list not visible",
+        };
+
+        return view.MemberCount is { } members && view.Readability != Readability.NotVisible ? $"{members} in Local · {rows}" : rows;
+    }
+
+    // ---- header, footer, clock -----------------------------------------------------------------
+
+    private void RefreshAll()
+    {
+        var status = MonitorStatus.Compute(
+            _loop.IsRunning,
+            _settings.Region is not null,
+            _settings.Calibration is not null,
+            _alertState.Stable,
+            _captureError);
+
+        _header.Apply(status);
+        _header.SetRunning(_loop.IsRunning);
+        _stateLine.Background = Palette.For(status.State).Brush;
+        _titleBar.Subtitle = _loop.IsRunning ? $"v{_version} · watching Local" : $"v{_version} · stopped";
+
+        _regionText.Text = _settings.Region is { } region ? $"Region {Describe(region)}" : "No region selected";
+        RefreshMute();
+        RefreshFooterRight();
+    }
+
+    private void RefreshMute()
+    {
+        DateTimeOffset? until = _dispatcher.IsMuted ? _dispatcher.MutedUntil : null;
+        TimeSpan? remaining = until is { } end ? end - DateTimeOffset.UtcNow : null;
+        _header.SetMute(remaining);
+        _alertsTab.SetMute(until);
+        _monitorTab.SetChannels(_settings.Alerts.Threats, muted: until is not null);
+
+        if (_wasMuted && until is null)
+        {
+            _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Info, "Mute ended", "Sound and ntfy are back on.");
+        }
+
+        _wasMuted = until is not null;
+    }
+
+    private void RefreshFooterRight()
+    {
+        bool has = _settings.Calibration is not null;
+        _calibrationDot.SetState(MonitorState.Stopped);
+        _calibrationDot.Background = has ? Palette.Ok.Brush : null;
+        _calibrationDot.BorderBrush = has ? Palette.Ok.Brush : Palette.TextLabel.Brush;
+        _calibrationDot.BoxShadow = default;
+        _calibrationText.Text = $"{DescribeCalibration()} · {_templates.Icons.Count} templates loaded";
+    }
+
+    private string DescribeCalibration() => _calibrationSource switch
+    {
+        "none" => "No calibration",
+        "manual" => "Calibration set (manual)",
+        "saved" => "Calibration loaded from settings",
+        var other => $"Calibration {other} (auto-detected)",
+    };
+
+    private void OnClock()
+    {
+        // The loop only publishes an update when a frame changed, so "last scan" comes from the tick
+        // event; a quiet Local keeps counting up, and a stalled loop turns the figure yellow.
+        if (_loop.IsRunning && _lastTick is { } tick)
+        {
+            TimeSpan since = DateTimeOffset.Now - tick;
+            bool stalled = since > TimeSpan.FromMilliseconds(Math.Max(1000, 3.0 * _settings.PollIntervalMs));
+            _header.SetLastScan(since, stalled);
+        }
+        else
+        {
+            _header.SetLastScan(null, stalled: false);
+        }
+
+        RefreshMute();
+    }
+
+    private void SetFooter(string message) => _footerMessage.Text = message;
+
+    // ---- region and calibration ----------------------------------------------------------------
+
+    private async Task SelectRegionAsync()
+    {
+        bool wasRunning = _loop.IsRunning;
+        _loop.Stop();
+
+        // Get out of our own screenshot before the overlay goes up.
+        WindowState = WindowState.Minimized;
+        await Task.Delay(200);
+
+        CorePixelRect? picked = await RegionPickerWindow.PickAsync(this);
+
+        WindowState = WindowState.Normal;
+        Activate();
+
+        if (picked is not { } region || region.Width < 20 || region.Height < 20)
+        {
+            SetFooter("Region selection cancelled; nothing changed.");
+            if (wasRunning && _settings.Region is { } previous)
+            {
+                StartLoop(previous);
+            }
+
+            RefreshAll();
             return;
         }
 
-        string readability = snapshot.Readability switch
+        _settings = _settings with { Region = region };
+        string detail = $"Region {Describe(region)}";
+        if (!RegionHeuristics.IsPlausibleListWidth(region.Width))
         {
-            Readability.NotVisible => "NOT VISIBLE — Local window covered, minimised or mis-calibrated. This is not 'all clear'.",
-            Readability.Overflow => $"OVERFLOW — more pilots than fit; {snapshot.HeaderMemberCount?.ToString() ?? "?"} in Local, {snapshot.OccupiedFullRows} readable.",
-            _ => $"Full — all {snapshot.OccupiedFullRows} rows readable.",
-        };
-
-        ThreatBreakdown threats = snapshot.Threats;
-        _status.Text = $"""
-            {message}
-
-            {readability}
-            Threats: {threats.Total}  (enemy {threats.Enemy}, neutral {threats.Neutral}, unknown {threats.Unknown}, extra no-icon {threats.ExtraNoIcon})
-            Header count: {snapshot.HeaderMemberCount?.ToString() ?? "unreadable"}
-            """;
-    }
-
-    private static string BuildRowTable(Snapshot snapshot)
-    {
-        var builder = new StringBuilder();
-        builder.AppendLine($"{"y",5} {"kind",-7} {"category",-9} {"template",-14} {"best",5}");
-        foreach (RowResult row in snapshot.Rows)
-        {
-            if (row.Category == RowCategory.Empty && !row.IsPartial) continue;
-
-            builder.AppendLine($"{row.SlotTop,5} {(row.IsPartial ? "partial" : "full"),-7} {row.Category,-9} " +
-                $"{row.TemplateName ?? "-",-14} {row.BestScore,5:F1}");
+            detail += $"\nThat is {region.Width} px wide — a member list is about 150 px. If the rows look wrong, re-drag around just the names column.";
         }
 
-        return builder.ToString();
+        _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Info, "Region picked", detail);
+        RedetectCalibration();
+        Save();
+
+        if (wasRunning)
+        {
+            StartLoop(region);
+        }
+
+        RefreshAll();
     }
 
-    private void SaveSettings()
+    private void RedetectCalibration()
     {
-        _settings = _settings with
+        if (_settings.Region is not { } region)
         {
-            PollIntervalMs = (int)(_interval.Value ?? 500),
-            Alerts = _alertsPanel.Value,
-        };
-        _dispatcher.Settings = _settings.Alerts;
-        _settingsStore.Save(_settings);
-        SetStatus($"Settings saved to {_settingsStore.FilePath}");
+            SetFooter("Select a region first.");
+            return;
+        }
+
+        try
+        {
+            Frame frame = CaptureOnce(region);
+            _lastFrame = frame;
+            DetectionResult detection = CalibrationDetector.Detect(frame);
+            DateTimeOffset now = DateTimeOffset.Now;
+
+            if (detection.Calibration is not { } calibration)
+            {
+                _calibrationTab.SetDetection(detection, now, $"from region {region.Width} × {region.Height}");
+                _calibrationTab.SetFrame(frame, RenderScaling);
+                _monitorTab.ShowFrame(frame, null, null, _templates, RenderScaling);
+                _sessionLog.Add(now, SessionEntryKind.Error, "Auto-detect failed", detection.Notes.FirstOrDefault() ?? "No list found.");
+                SetFooter("Auto-detect failed. Re-drag around just the member list, or set the numbers by hand.");
+                return;
+            }
+
+            _settings = _settings with { Calibration = calibration };
+            _calibrationSource = detection.Confidence.ToString().ToLowerInvariant();
+
+            Snapshot snapshot = LocalListReader.Read(frame, calibration, _templates);
+            string header = snapshot.HeaderMemberCount is { } count
+                ? $"· header reads {count}, matching {snapshot.OccupiedFullRows} occupied rows"
+                : "· header count unreadable";
+
+            _calibrationTab.SetCalibration(calibration);
+            _calibrationTab.SetDetection(detection, now, $"from region {region.Width} × {region.Height} {header}");
+            _calibrationTab.SetFrame(frame, RenderScaling);
+            _monitorTab.ShowFrame(frame, snapshot, calibration, _templates, RenderScaling);
+
+            _sessionLog.Add(now, SessionEntryKind.Info, "Calibration detected", $"Confidence {detection.Confidence} · pitch {calibration.RowPitch} px");
+            SetFooter(detection.Confidence == DetectionConfidence.Good
+                ? $"Detected calibration for region {Describe(region)}."
+                : $"Calibration confidence is {detection.Confidence} — check the numbers on the Calibration tab before trusting the counts.");
+            RestartIfRunning();
+        }
+        catch (Exception ex)
+        {
+            _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Error, "Capture failed", ex.Message);
+            SetFooter($"Capture failed: {ex.Message}");
+        }
+
+        RefreshAll();
+    }
+
+    private void OnCalibrationApplied(Calibration calibration)
+    {
+        _settings = _settings with { Calibration = calibration };
+        _calibrationSource = "manual";
+        _calibrationTab.SetCalibration(calibration);
+        Save();
+        _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Info, "Calibration applied", "Edited by hand.");
+
+        if (_loop.IsRunning)
+        {
+            RestartIfRunning();
+        }
+        else
+        {
+            ShowStaticFrame();
+        }
+
+        SetFooter("Calibration applied and saved.");
+        RefreshAll();
+    }
+
+    /// <summary>One capture, for the preview and guides while not watching. Silent on failure: this is
+    /// a convenience, and the real error surfaces when the user presses Start.</summary>
+    private void ShowStaticFrame()
+    {
+        if (_settings.Region is not { } region || _loop.IsRunning)
+        {
+            return;
+        }
+
+        try
+        {
+            Frame frame = CaptureOnce(region);
+            _lastFrame = frame;
+            Snapshot? snapshot = _settings.Calibration is { } calibration ? LocalListReader.Read(frame, calibration, _templates) : null;
+            _monitorTab.ShowFrame(frame, snapshot, _settings.Calibration, _templates, RenderScaling);
+            _calibrationTab.SetFrame(frame, RenderScaling);
+        }
+        catch (Exception)
+        {
+            // Left blank; see summary.
+        }
+    }
+
+    // ---- settings, alerts ----------------------------------------------------------------------
+
+    private void OnIntervalChanged(int ms)
+    {
+        _settings = _settings with { PollIntervalMs = ms };
+        Save();
+        _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Info, "Scan interval", $"Every {ms} ms");
+        if (_loop.IsRunning && _settings.Region is { } region)
+        {
+            _loop.Start(region, _settings.Calibration, _templates, ms);
+        }
+    }
+
+    private void OnPinToggled(bool pinned)
+    {
+        Topmost = pinned;
+        _settings = _settings with { Ui = _settings.Ui with { KeepOnTop = pinned } };
+        Save();
+    }
+
+    private void OnAlertSettingsChanged(AlertSettings alerts)
+    {
+        _settings = _settings with { Alerts = alerts };
+        _dispatcher.Settings = alerts;
+        Save();
+        _monitorTab.SetChannels(alerts.Threats, _dispatcher.IsMuted);
+        SetFooter($"Alert settings saved · {DateTimeOffset.Now:HH:mm:ss}");
+    }
+
+    private void OnHeaderMuteClicked()
+    {
+        if (_dispatcher.IsMuted)
+        {
+            OnMuteRequested(null);
+        }
+        else
+        {
+            OnMuteRequested(TimeSpan.FromMinutes(15));
+        }
+    }
+
+    private void OnMuteRequested(TimeSpan? duration)
+    {
+        if (duration is { } window)
+        {
+            _dispatcher.MuteFor(window);
+            _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Info, "Muted", $"For {Describe(window)} — sound and ntfy are silent; popups still appear.");
+        }
+        else
+        {
+            _dispatcher.Unmute();
+            _sessionLog.Add(DateTimeOffset.Now, SessionEntryKind.Info, "Unmuted");
+        }
+
+        _wasMuted = _dispatcher.IsMuted;
+        RefreshMute();
+    }
+
+    private void PlayChime(int volume)
+    {
+        try
+        {
+            _soundPlayer.Play(AlertTone.BuildWav(volume));
+        }
+        catch (Exception ex)
+        {
+            SetFooter($"Sound: {ex.Message}");
+        }
+    }
+
+    private async Task TestChannelAsync(string channel)
+    {
+        var message = new AlertMessage(
+            AlertKind.ThreatIncreased,
+            "Hostile in Local",
+            "1 red — 1 threat visible (test alert)",
+            AlertPriority.Urgent,
+            DateTimeOffset.Now);
+
+        AlertSettings alerts = _alertsTab.Value;
+
+        try
+        {
+            switch (channel)
+            {
+                case "sound":
+                    PlayChime(alerts.VolumePercent);
+                    Log("Test: sound", "Played the built-in chime.");
+                    break;
+                case "popup":
+                    _presenter.Present(message);
+                    Log("Test: popup", "Shown near the watched region.");
+                    break;
+                case "ntfy":
+                    if (string.IsNullOrWhiteSpace(alerts.NtfyTopic))
+                    {
+                        SetFooter("ntfy: set a topic first (press Generate).");
+                        return;
+                    }
+
+                    bool sent = await new NtfyClient(_httpClient).SendAsync(
+                        message with { Title = "EVE: " + message.Title },
+                        new NtfyOptions(alerts.NtfyServer, alerts.NtfyTopic));
+                    RecordNtfyOutcome(sent ? ChannelResult.Sent : ChannelResult.Failed, DateTimeOffset.Now);
+                    Log(
+                        sent ? "Test: ntfy delivered" : "Test: ntfy failed",
+                        sent ? $"Sent to {alerts.NtfyServer.TrimEnd('/')}/{alerts.NtfyTopic}" : "Check the server and topic.",
+                        sent ? SessionEntryKind.Info : SessionEntryKind.Error);
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Test: {channel} failed", ex.Message, SessionEntryKind.Error);
+        }
+
+        void Log(string title, string detail, SessionEntryKind kind = SessionEntryKind.Info) =>
+            _sessionLog.Add(DateTimeOffset.Now, kind, title, detail);
+    }
+
+    private void Save()
+    {
+        try
+        {
+            _settingsStore.Save(_settings);
+        }
+        catch (Exception ex)
+        {
+            SetFooter($"Could not save settings: {ex.Message}");
+        }
     }
 
     private void Shutdown()
     {
+        _clock.Stop();
         _loop.Dispose();
         _soundPlayer.Dispose();
         _httpClient.Dispose();
     }
 
-    private static Frame CaptureOnce(PixelRect region)
+    // ---- helpers -------------------------------------------------------------------------------
+
+    private static Frame CaptureOnce(CorePixelRect region)
     {
         using var capture = new GdiScreenCapture();
         return capture.Capture(region);
@@ -473,5 +778,8 @@ public sealed class MainWindow : Window
         }
     }
 
-    private static string Describe(PixelRect region) => $"{region.Width}×{region.Height} at ({region.X},{region.Y})";
+    private static string Describe(CorePixelRect region) => $"{region.Width} × {region.Height} at {region.X}, {region.Y}";
+
+    private static string Describe(TimeSpan span) =>
+        span.TotalMinutes >= 60 ? $"{span.TotalHours:0.#} hour{(span.TotalHours == 1 ? string.Empty : "s")}" : $"{(int)span.TotalMinutes} min";
 }

@@ -11,9 +11,9 @@ namespace EveLocalMon.Core.Settings;
 /// </summary>
 public sealed record AppSettings
 {
-    /// <summary>v2 added the <see cref="Alerts"/> block. A v1 file still loads: the missing block
-    /// simply takes its defaults.</summary>
-    public const int CurrentSchemaVersion = 2;
+    /// <summary>v2 added the <see cref="Alerts"/> block, v3 the <see cref="Ui"/> block. An older file
+    /// still loads: a missing block simply takes its defaults.</summary>
+    public const int CurrentSchemaVersion = 3;
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
 
@@ -27,4 +27,6 @@ public sealed record AppSettings
     public string? TemplatesDirectory { get; init; }
 
     public AlertSettings Alerts { get; init; } = new();
+
+    public UiSettings Ui { get; init; } = new();
 }

@@ -21,6 +21,11 @@ public sealed class MonitorLoop : IDisposable
 
     public event Action<MonitorUpdate>? Updated;
 
+    /// <summary>Raised on the UI thread after every capture, including ones whose frame was unchanged
+    /// and so produced no <see cref="Updated"/>. Lets the header show that the loop is alive on a quiet
+    /// Local — a stalled loop must not look like a clear one (doc/specs/M4-SPEC.md §4.2).</summary>
+    public event Action<DateTimeOffset>? Ticked;
+
     public bool IsRunning => _task is { IsCompleted: false };
 
     public void Start(PixelRect region, Calibration? calibration, TemplateSet templates, int intervalMs)
@@ -51,6 +56,7 @@ public sealed class MonitorLoop : IDisposable
             try
             {
                 Frame frame = capture.Capture(region);
+                PublishTick();
 
                 bool unchanged = previous is not null && frame.Pixels.AsSpan().SequenceEqual(previous);
                 if (!unchanged)
@@ -73,6 +79,12 @@ public sealed class MonitorLoop : IDisposable
     }
 
     private void Publish(MonitorUpdate update) => Dispatcher.UIThread.Post(() => Updated?.Invoke(update));
+
+    private void PublishTick()
+    {
+        DateTimeOffset now = DateTimeOffset.Now;
+        Dispatcher.UIThread.Post(() => Ticked?.Invoke(now));
+    }
 
     private static Frame EmptyFrame() => new(1, 1, 4, new byte[4]);
 

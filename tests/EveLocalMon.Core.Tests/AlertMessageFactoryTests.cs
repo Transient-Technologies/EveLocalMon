@@ -17,7 +17,7 @@ public class AlertMessageFactoryTests
             new ThreatIncreased(0, 2, Breakdown(enemy: 1, neutral: 1), Now));
 
         Assert.Equal(AlertKind.ThreatIncreased, message.Kind);
-        Assert.Equal("EVE: hostile in Local", message.Title);
+        Assert.Equal("Hostile in Local", message.Title);
         Assert.Equal("1 red, 1 neutral — 2 threats visible", message.Body);
         Assert.Equal(AlertPriority.Urgent, message.Priority);
     }
@@ -28,7 +28,7 @@ public class AlertMessageFactoryTests
         AlertMessage message = AlertMessageFactory.Create(
             new ThreatIncreased(2, 3, Breakdown(enemy: 2, neutral: 1), Now));
 
-        Assert.Equal("EVE: more hostiles in Local", message.Title);
+        Assert.Equal("More hostiles in Local", message.Title);
         Assert.Equal("+1 (2 red, 1 neutral) — now 3 threats", message.Body);
     }
 
@@ -73,7 +73,7 @@ public class AlertMessageFactoryTests
     {
         AlertMessage message = AlertMessageFactory.Create(new LocalClear(Now));
 
-        Assert.Equal("EVE: Local clear", message.Title);
+        Assert.Equal("All clear", message.Title);
         Assert.Equal("No threats visible.", message.Body);
         Assert.Equal(AlertPriority.Low, message.Priority);
     }
@@ -84,8 +84,8 @@ public class AlertMessageFactoryTests
         AlertMessage message = AlertMessageFactory.Create(
             new ReadabilityChanged(Readability.Full, Readability.Overflow, MemberCount: 100, VisibleRows: 56, Now));
 
-        Assert.Equal(AlertKind.Unreadable, message.Kind);
-        Assert.Equal("EVE: Local unreadable", message.Title);
+        Assert.Equal(AlertKind.Overflow, message.Kind);
+        Assert.Equal("Local unreadable — too long", message.Title);
         Assert.Equal("Local too long to read: 100 pilots, 56 visible. Cannot confirm Local is clear.", message.Body);
         Assert.Equal(AlertPriority.High, message.Priority);
     }
@@ -106,7 +106,7 @@ public class AlertMessageFactoryTests
         AlertMessage message = AlertMessageFactory.Create(
             new ReadabilityChanged(Readability.Full, Readability.NotVisible, MemberCount: null, VisibleRows: 0, Now));
 
-        Assert.Equal("EVE: Local unreadable", message.Title);
+        Assert.Equal("Local unreadable", message.Title);
         Assert.Contains("covered, minimised or mis-calibrated", message.Body);
         Assert.Contains("Cannot confirm Local is clear.", message.Body);
     }
@@ -118,7 +118,7 @@ public class AlertMessageFactoryTests
             new ReadabilityChanged(Readability.Overflow, Readability.Full, MemberCount: 41, VisibleRows: 41, Now));
 
         Assert.Equal(AlertKind.Readable, message.Kind);
-        Assert.Equal("EVE: Local readable again", message.Title);
+        Assert.Equal("Local readable again", message.Title);
         Assert.Equal("41 pilots, all visible.", message.Body);
         Assert.Equal(AlertPriority.Low, message.Priority);
     }
@@ -128,7 +128,7 @@ public class AlertMessageFactoryTests
     {
         AlertMessage message = AlertMessageFactory.Create(new MemberCountIncreasedWhileUnreadable(100, 103, Now));
 
-        Assert.Equal("EVE: pilots joined, Local unreadable", message.Title);
+        Assert.Equal("Pilots joined, Local unreadable", message.Title);
         Assert.Equal("Local 100 → 103 while unreadable. New pilots not checked.", message.Body);
         Assert.Equal(AlertPriority.High, message.Priority);
     }

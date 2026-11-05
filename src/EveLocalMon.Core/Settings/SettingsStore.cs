@@ -61,8 +61,12 @@ public sealed class SettingsStore(string? filePath = null)
             Directory.CreateDirectory(directory);
         }
 
+        // Whatever version was loaded, what is written is the current one: an old file is upgraded the
+        // first time it is saved, instead of carrying new blocks under an old version number.
+        AppSettings current = settings with { SchemaVersion = AppSettings.CurrentSchemaVersion };
+
         string tempPath = FilePath + ".tmp";
-        File.WriteAllText(tempPath, JsonSerializer.Serialize(settings, JsonOptions));
+        File.WriteAllText(tempPath, JsonSerializer.Serialize(current, JsonOptions));
         File.Move(tempPath, FilePath, overwrite: true);
     }
 }

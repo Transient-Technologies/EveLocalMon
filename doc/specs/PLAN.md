@@ -318,14 +318,18 @@ them.
 | M1 | ✅ Reader + state | `LocalListReader` (rows, templates, header digits), `AlertState`, fixture-driven xUnit tests passing |
 | M2 | ✅ Picker & preview UI | Avalonia app: drag-select region overlay, auto-detected calibration with manual override, live preview with per-row classification, settings persistence (`doc/M2-SPEC.md`) |
 | M3 | ✅ Alerts | Synthesised chime via winmm, always-on-top popup (deliberately **not** a native toast — Focus Assist suppresses those during fullscreen games), ntfy push, per-channel rate limits, mute, CLI `test-alert` (`doc/M3-SPEC.md`) |
-| M4 | Monitoring shell | Tray icon, start/stop, mute, template cropper ("add unknown icon as friendly"), detection history |
-| M5 | Windows release | Velopack installer, autostart, GitHub Actions build + release |
-| M6 | macOS | ScreenCaptureKit capture, Screen Recording permission flow, Retina scaling, notifications, signing/notarization |
-| M7 | Extras | Hotkey, quiet hours, multi-region, ntfy auth/attachments |
+| M4 | ✅ EVE-style UI refresh | Photon-style theme, custom title bar, status header, session log, mute presets, popup countdown, picker loupe + width check, calibration zoom + live draft (`doc/specs/M4-SPEC.md`) |
+| M5 | Monitoring shell | Tray icon, start/stop, mute, template cropper ("add unknown icon as friendly"), detection history |
+| M6 | Windows release | Velopack installer, autostart, GitHub Actions build + release |
+| M7 | macOS | ScreenCaptureKit capture, Screen Recording permission flow, Retina scaling, notifications, signing/notarization |
+| M8 | Extras | Hotkey, quiet hours, multi-region, ntfy auth/attachments |
 
 Reordered after M1: the region picker moved ahead of alerts, because calibrating by hand-editing
 JSON is the thing blocking real use, and alerts are only meaningful once the reader is pointed at
 a live Local window.
+
+Renumbered 2026-11-04: the UI refresh was inserted as M4. Specs written before then call the
+monitoring shell M4, the release M5 and macOS M6.
 
 ---
 
