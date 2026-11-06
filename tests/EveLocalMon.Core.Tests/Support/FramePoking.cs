@@ -48,4 +48,23 @@ public static class FramePoking
         (0, size - 1),
         (size - 1, size - 1),
     ];
+
+    /// <summary>Adds <paramref name="delta"/> to every channel of the icon slot's coloured fill (pixels
+    /// below <paramref name="glyphLumaMin"/>), leaving the opaque white glyph alone — what a brighter
+    /// background or a row highlight does to EVE's translucent icon fill.</summary>
+    public static void ShiftIconFill(Frame frame, int x0, int y0, int size, int delta, int glyphLumaMin = 200)
+    {
+        for (int dy = 0; dy < size; dy++)
+        {
+            for (int dx = 0; dx < size; dx++)
+            {
+                if (frame.GetPixel(x0 + dx, y0 + dy).Luma >= glyphLumaMin) continue;
+                int offset = (y0 + dy) * frame.Stride + (x0 + dx) * 4;
+                for (int c = 0; c < 3; c++)
+                {
+                    frame.Pixels[offset + c] = (byte)Math.Clamp(frame.Pixels[offset + c] + delta, 0, 255);
+                }
+            }
+        }
+    }
 }

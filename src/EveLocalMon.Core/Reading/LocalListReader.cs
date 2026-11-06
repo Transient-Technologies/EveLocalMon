@@ -179,7 +179,7 @@ public static class LocalListReader
         }
 
         (string? name, double best, double secondBest, TemplateCategory? category) =
-            MatchTemplate(frame, cal.IconX, top, templates.Icons, opt.MatchSearchRadius);
+            MatchTemplate(frame, cal.IconX, top, templates.Icons, opt.MatchSearchRadius, opt.MatchMaxBackgroundShift);
 
         RowCategory resolved = category.HasValue && best <= opt.MatchMaxMeanDiff
             ? category.Value switch
@@ -195,7 +195,7 @@ public static class LocalListReader
     }
 
     private static (string? Name, double Best, double SecondBest, TemplateCategory? Category) MatchTemplate(
-        Frame frame, int iconX, int slotTop, IReadOnlyList<IconTemplate> templates, int radius)
+        Frame frame, int iconX, int slotTop, IReadOnlyList<IconTemplate> templates, int radius, int maxShift)
     {
         string? bestName = null;
         TemplateCategory? bestCategory = null;
@@ -211,7 +211,7 @@ public static class LocalListReader
             {
                 for (int dy = -radius; dy <= radius; dy++)
                 {
-                    double? score = ScoreOffset(frame, iconX + dx, slotTop + dy, template, size);
+                    double? score = ScoreOffset(frame, iconX + dx, slotTop + dy, template, size, maxShift, templateBest);
                     if (score is { } s && s < templateBest) templateBest = s;
                 }
             }
@@ -232,28 +232,71 @@ public static class LocalListReader
         return (bestName, best, secondBest, bestCategory);
     }
 
-    private static double? ScoreOffset(Frame frame, int originX, int originY, IconTemplate template, int size)
+    /// <summary>
+    /// Mean per-channel abs diff after removing a per-channel offset. The icons' coloured fill is
+    /// translucent (~40% of the window background shows through), so a brighter background — a
+    /// nebula, or EVE's own row hover/selection highlight — shifts the whole fill uniformly and
+    /// pushed a real fleet icon past the threshold into Unknown. The offset is the mean signed
+    /// diff, clamped to ±<paramref name="maxShift"/> so a genuinely different colour (another
+    /// standing) can't be explained away as background.
+    /// </summary>
+    /// <param name="cutoff">Scores at or above this are of no interest to the caller; once a lower
+    /// bound proves the score can't beat it, that bound is returned instead of the exact score.</param>
+    internal static double? ScoreOffset(
+        Frame frame, int originX, int originY, IconTemplate template, int size, int maxShift, double cutoff = double.MaxValue)
     {
         if (originX < 0 || originY < 0 || originX + size > frame.Width || originY + size > frame.Height)
         {
             return null;
         }
 
-        long sum = 0;
+        // Hot path (rows × templates × search offsets): index the BGRA bytes directly.
+        ReadOnlySpan<byte> fp = frame.Pixels;
+        ReadOnlySpan<byte> tp = template.Image.Pixels;
+        bool[] mask = template.Mask;
+        int sumB = 0, sumG = 0, sumR = 0, sumAbs = 0;
         int count = 0;
         for (int y = 0; y < size; y++)
         {
+            int fRow = (originY + y) * frame.Stride + originX * 4;
+            int tRow = y * template.Image.Stride;
             for (int x = 0; x < size; x++)
             {
-                if (!template.Mask[y * size + x]) continue;
-                Bgr a = frame.GetPixel(originX + x, originY + y);
-                Bgr b = template.Image.GetPixel(x, y);
-                sum += Math.Abs(a.R - b.R) + Math.Abs(a.G - b.G) + Math.Abs(a.B - b.B);
+                if (!mask[y * size + x]) continue;
+                int f = fRow + x * 4, t = tRow + x * 4;
+                int db = fp[f] - tp[t], dg = fp[f + 1] - tp[t + 1], dr = fp[f + 2] - tp[t + 2];
+                sumB += db;
+                sumG += dg;
+                sumR += dr;
+                sumAbs += Math.Abs(db) + Math.Abs(dg) + Math.Abs(dr);
                 count++;
             }
         }
 
-        return count == 0 ? null : sum / (count * 3.0);
+        if (count == 0) return null;
+
+        int shiftB = (int)Math.Clamp(Math.Round((double)sumB / count), -maxShift, maxShift);
+        int shiftG = (int)Math.Clamp(Math.Round((double)sumG / count), -maxShift, maxShift);
+        int shiftR = (int)Math.Clamp(Math.Round((double)sumR / count), -maxShift, maxShift);
+
+        // |d - s| >= |d| - |s|, so removing the shift can lower the total by at most count × |s|.
+        double lowerBound = (sumAbs - count * (Math.Abs(shiftB) + Math.Abs(shiftG) + Math.Abs(shiftR))) / (count * 3.0);
+        if (lowerBound >= cutoff) return lowerBound;
+
+        long sum = 0;
+        for (int y = 0; y < size; y++)
+        {
+            int fRow = (originY + y) * frame.Stride + originX * 4;
+            int tRow = y * template.Image.Stride;
+            for (int x = 0; x < size; x++)
+            {
+                if (!mask[y * size + x]) continue;
+                int f = fRow + x * 4, t = tRow + x * 4;
+                sum += Math.Abs(fp[f] - tp[t] - shiftB) + Math.Abs(fp[f + 1] - tp[t + 1] - shiftG) + Math.Abs(fp[f + 2] - tp[t + 2] - shiftR);
+            }
+        }
+
+        return sum / (count * 3.0);
     }
 
     private static Readability DetermineReadability(int occupiedFullRows, bool hasPartialWithContent, int? headerCount)

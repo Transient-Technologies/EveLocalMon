@@ -75,23 +75,9 @@ public class TemplateSanityTests
         Assert.True(ranked[1].Score >= 12.0, $"runner-up {ranked[1].Name} was only {ranked[1].Score:F1} away");
     }
 
-    private static double MeanMaskedDiff(Frame frame, int originX, int originY, IconTemplate template)
-    {
-        int size = template.Image.Width;
-        long sum = 0;
-        int count = 0;
-        for (int y = 0; y < size; y++)
-        {
-            for (int x = 0; x < size; x++)
-            {
-                if (!template.Mask[y * size + x]) continue;
-                Bgr a = frame.GetPixel(originX + x, originY + y);
-                Bgr b = template.Image.GetPixel(x, y);
-                sum += Math.Abs(a.R - b.R) + Math.Abs(a.G - b.G) + Math.Abs(a.B - b.B);
-                count++;
-            }
-        }
-
-        return count == 0 ? 0 : sum / (count * 3.0);
-    }
+    // The reader's own scorer (with background-shift compensation), at the default options,
+    // so these bounds guard exactly what classifies a row.
+    private static double MeanMaskedDiff(Frame frame, int originX, int originY, IconTemplate template) =>
+        LocalListReader.ScoreOffset(frame, originX, originY, template, template.Image.Width,
+            new ReaderOptions().MatchMaxBackgroundShift) ?? double.MaxValue;
 }

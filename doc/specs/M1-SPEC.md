@@ -122,7 +122,7 @@ star icon.
 
 | Fact | Value | Source |
 | --- | --- | --- |
-| Icon size | 12 × 12 px, rounded square, opaque | both samples |
+| Icon size | 12 × 12 px, rounded square. White glyph is opaque; the coloured fill is translucent (~40 % of the window background shows through) | both samples; live capture 2026-11 |
 | Row pitch | 17 px (12 px icon + 5 px gap) | both samples |
 | Name text rows | slot top + 2 … slot top + 11 | sample 2 |
 | Name text start | icon x + 17 | sample 2 (x 331 vs icon 314) |
@@ -130,6 +130,8 @@ star icon.
 | Same icon, across four samples and window backgrounds | mean abs diff **0.6 – 5.1** | measured; the spread comes from EVE's translucent pane letting different backgrounds through |
 | Different icons, closest pair (blue star vs blue plus) | mean abs diff **15.3 – 17.7** | measured |
 | Different icons, other pairs | ≥ 28 (orange vs red minus), ≥ 46 elsewhere | measured |
+| Fill shift from background | background luma 11 → 37 moved the purple fill by ≈ +10 per channel; a row highlight or bright nebula pushed real fleet icons past 8.0 into `Unknown` | live capture, 57-pilot fleet |
+| With background-shift compensation (§2.3c) | same icon ≤ 2.0 on samples and live; closest different pair 13.8 (orange vs red minus, both Enemy), every other pair higher | measured |
 
 The `MatchMaxMeanDiff` threshold of 8.0 sits in the gap between those two bands, with ~3 px of
 headroom below and ~7 above. `TemplateSanityTests` pins both edges so a future template or sample
@@ -189,6 +191,7 @@ public sealed record ReaderOptions
     public int IconPixelChromaMin { get; init; } = 40; // …or chroma ≥ this
     public double IconPresentFraction { get; init; } = 0.5;  // of masked pixels
     public double MatchMaxMeanDiff { get; init; } = 8.0;     // see §2.1: 2.2 vs 17.3
+    public int MatchMaxBackgroundShift { get; init; } = 24;  // per channel; see §2.3c step 3
     public int MatchSearchRadius { get; init; } = 1;         // ±px in x and y
     public int PartialRowMinPixels { get; init; } = 4;
     public int OwnPilotNoIconAllowance { get; init; } = 1;
@@ -236,7 +239,12 @@ inside `ListRect`, otherwise **partial**.
 2. `IconPixels` = masked pixels in icon rect that are icon-like. Icon present if
    `IconPixels ≥ IconPresentFraction × maskedCount`.
 3. If icon present: for every template and every offset `dx, dy ∈ [−r, r]`, score =
-   mean over masked pixels of `(|ΔR| + |ΔG| + |ΔB|) / 3`. Keep best and second-best
+   mean over masked pixels of `(|ΔR − sR| + |ΔG − sG| + |ΔB − sB|) / 3`, where `sC` is the mean
+   signed `ΔC` over the masked pixels clamped to ±`MatchMaxBackgroundShift`. That removes the
+   uniform shift a brighter background puts on the translucent fill; the clamp keeps a genuinely
+   different colour (another standing) from being absorbed. An offset whose lower bound
+   (`Σ|Δ| − count·Σ|s|`) already can't beat the template's best so far skips the second pass.
+   Keep best and second-best
    (second-best = best score of a *different* template). Best ≤ `MatchMaxMeanDiff` →
    template's category; else `Unknown`.
 4. No icon: occupied → `NoIcon`; else `Empty`.

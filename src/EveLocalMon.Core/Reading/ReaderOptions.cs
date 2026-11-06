@@ -26,6 +26,12 @@ public sealed record ReaderOptions
     /// distinct icons differ by 17.3. 8.0 sits well inside that gap.</summary>
     public double MatchMaxMeanDiff { get; init; } = 8.0;
 
+    /// <summary>Largest per-channel colour shift (0-255) attributed to background showing through an
+    /// icon's translucent fill, and removed before scoring. ~40% of the background shows through, so
+    /// background luma 10→60 moves the fill by ~20. Kept well below the colour gaps between standings
+    /// (e.g. blue vs green star) so a different colour still scores as a different icon.</summary>
+    public int MatchMaxBackgroundShift { get; init; } = 24;
+
     /// <summary>Search window (in each of x and y) used to line the icon up with each template.</summary>
     public int MatchSearchRadius { get; init; } = 1;
 

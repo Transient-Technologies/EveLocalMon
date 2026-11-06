@@ -131,4 +131,38 @@ public class SyntheticReaderTests
         // overflow has no signal left to detect it.
         Assert.Equal(Readability.Full, snapshot.Readability);
     }
+
+    [Fact]
+    public void FleetIconOverBrightBackgroundStillMatchesFriendly()
+    {
+        Frame frame = LoadSample1();
+        TemplateSet templates = LoadTemplates();
+
+        // Slot 98 is purple-person. ~40% of the background shows through the fill, so a row
+        // highlight or nebula ~50 luma brighter than where the template was cut shifts it by ~20.
+        // Uncompensated, that scored well past MatchMaxMeanDiff and raised a false threat.
+        FramePoking.ShiftIconFill(frame, x0: 303, y0: 98, size: 12, delta: 20);
+
+        Snapshot uncompensated = LocalListReader.Read(frame, Sample1Calibration, templates, new ReaderOptions { MatchMaxBackgroundShift = 0 });
+        Assert.Equal(RowCategory.Unknown, uncompensated.Rows.Single(r => r.SlotTop == 98).Category);
+
+        Snapshot snapshot = LocalListReader.Read(frame, Sample1Calibration, templates);
+        RowResult row = snapshot.Rows.Single(r => r.SlotTop == 98);
+        Assert.Equal(RowCategory.Friendly, row.Category);
+        Assert.Equal("purple-person", row.TemplateName);
+    }
+
+    [Fact]
+    public void FillShiftBeyondBackgroundAllowanceIsUnknown()
+    {
+        Frame frame = LoadSample1();
+        TemplateSet templates = LoadTemplates();
+
+        // A colour change larger than any background can cause is a different icon, not the same
+        // one over a brighter backdrop — the shift clamp must not absorb it.
+        FramePoking.ShiftIconFill(frame, x0: 303, y0: 98, size: 12, delta: 60);
+
+        Snapshot snapshot = LocalListReader.Read(frame, Sample1Calibration, templates);
+        Assert.Equal(RowCategory.Unknown, snapshot.Rows.Single(r => r.SlotTop == 98).Category);
+    }
 }
